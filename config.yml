@@ -39,6 +39,9 @@ sources:
       - "для тех"
       - "кто пополн"
       - "кто делал депозит"
+      - "доступен игрокам"
+      - "у кого есть"
+      - "у кого за"
     link_replacements:
       "https://cabura.cooking": "https://caburka.click/?ref=239049"
       "https://caburka.click": "https://caburka.click/?ref=239049"

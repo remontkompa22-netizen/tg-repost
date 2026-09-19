@@ -152,12 +152,27 @@ def extract_promo(text: str, cfg: dict) -> dict | None:
     note = ""
     for pat in cfg.get("condition_patterns") or []:
         found = next((l.strip() for l in lines[max(0, at - 1):at + near + 1]
-                      if re.search(pat, l, re.IGNORECASE) and len(l.strip()) < 120), "")
+                      if re.search(pat, l, re.IGNORECASE) and len(l.strip()) < 160), "")
         if found:
-            note = found
+            note = _clean_note(found)
             break
     data["note"] = note
     return data
+
+
+def _clean_note(line: str) -> str:
+    """Срезает у строки-условия начало с номиналом: «+ 60 рублей. Доступен…»
+    должно превратиться в «Доступен…», иначе сумма задваивается в посте."""
+    out = line.strip()
+    for _ in range(3):
+        cut = re.sub(
+            r"^[+\-–—•\s]*\d[\d\s]*\s*(?:рубл\w*|руб\.?|₽|р\.|FS|фриспин\w*|активаци\w*)\s*[.,;:—-]*\s*",
+            "", out, flags=re.IGNORECASE)
+        if cut == out:
+            break
+        out = cut
+    out = out.lstrip("+-–—•.,;: ").strip()
+    return out[:1].upper() + out[1:] if out else ""
 
 
 def _header(cfg: dict, my_link: str) -> str:
@@ -183,6 +198,21 @@ def _newbie_block(cfg: dict, my_link: str) -> str:
     ).strip()
 
 
+def _fill_template(tpl: str, values: dict) -> str:
+    """Подставляет значения построчно. Строку, где все подстановки пустые,
+    выбрасываем целиком — чтобы не оставалось «Осталось активаций: —»."""
+    out = []
+    for line in tpl.split("\n"):
+        keys = re.findall(r"\{(\w+)\}", line)
+        if keys and all(not str(values.get(k, "")).strip() for k in keys):
+            continue
+        try:
+            out.append(line.format(**values))
+        except (KeyError, IndexError):
+            out.append(line)
+    return "\n".join(out)
+
+
 def build_post(post: Post, cfg: dict) -> str:
     """Возвращает готовый текст для публикации (HTML-разметка Telegram)."""
     my_link = (cfg.get("my_link") or "").strip()
@@ -190,15 +220,15 @@ def build_post(post: Post, cfg: dict) -> str:
     promo = extract_promo(post.text, cfg) if cfg.get("use_promo_template", True) else None
 
     if promo and cfg.get("promo_template"):
-        body = cfg["promo_template"].format(
-            promo=esc(promo.get("promo", "")),
-            min=esc(promo.get("min", "—")),
-            max=esc(promo.get("max", "—")),
-            amount=esc(promo.get("amount", "")),
-            note=esc(promo.get("note", "")),
-            count=esc(promo.get("count", "—")),
-            link=my_link,
-        )
+        body = _fill_template(cfg["promo_template"], {
+            "promo": esc(promo.get("promo", "")),
+            "min": esc(promo.get("min", "")),
+            "max": esc(promo.get("max", "")),
+            "amount": esc(promo.get("amount", "")),
+            "note": esc(promo.get("note", "")),
+            "count": esc(promo.get("count", "")),
+            "link": my_link,
+        })
     else:
         body = esc(post.text)
         body = _replace_links(body, cfg.get("link_replacements", {}), my_link or None)
