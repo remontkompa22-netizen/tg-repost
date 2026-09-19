@@ -203,6 +203,36 @@ def process_callbacks(state: dict, cfg: dict) -> None:
                                                        "callback_data": "done"}]]})
             continue
 
+        if action.startswith("ch") and action[2:].isdigit():
+            # публикация в один выбранный канал
+            chans = target_channels(cfg)
+            idx = int(action[2:])
+            if idx >= len(chans):
+                tg("answerCallbackQuery", callback_query_id=cq["id"],
+                   text="Этого канала больше нет в списке")
+                continue
+            one = chans[idx]
+            res = send_media(one, entry["text"], entry.get("photos", []),
+                             entry.get("videos", []),
+                             preview=bool(cfg.get("link_preview", False)))
+            if not (res or {}).get("ok"):
+                tg("answerCallbackQuery", callback_query_id=cq["id"],
+                   text="Не удалось опубликовать, нажми ещё раз")
+                tg("sendMessage", chat_id=ADMIN,
+                   text=f"⚠️ Пост #{post_id} не ушёл в {one}. "
+                        f"Проверь права бота в этом канале.")
+                continue
+            state.setdefault("published", []).append(int(post_id))
+            state["pending"].pop(post_id, None)
+            tg("answerCallbackQuery", callback_query_id=cq["id"],
+               text=f"Опубликовано в {one}")
+            if chat_id and message_id:
+                tg("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,
+                   reply_markup={"inline_keyboard": [[{"text": f"✅ Ушло в {one}",
+                                                       "callback_data": "done"}]]})
+            time.sleep(0.4)
+            continue
+
         if action == "auto":
             state["auto"] = True
 
@@ -249,14 +279,32 @@ def process_callbacks(state: dict, cfg: dict) -> None:
 
 # ───────────────────────── новые посты ─────────────────────────
 
-def draft_keyboard(post_id: int) -> dict:
-    return {"inline_keyboard": [
-        [
-            {"text": "✅ Опубликовать", "callback_data": f"pub:{post_id}"},
-            {"text": "🚫 Пропустить", "callback_data": f"skip:{post_id}"},
-        ],
-        [{"text": "⚡ Дальше автоматом", "callback_data": f"auto:{post_id}"}],
-    ]}
+def draft_keyboard(post_id: int, channels: list[str] | None = None) -> dict:
+    """Кнопки под черновиком.
+
+    Верхний ряд — опубликовать сразу везде или пропустить. Средний появляется,
+    когда каналов больше одного: каждая кнопка шлёт пост только в свой канал.
+    """
+    channels = channels or []
+    rows = [[
+        {"text": "✅ Опубликовать везде" if len(channels) > 1 else "✅ Опубликовать",
+         "callback_data": f"pub:{post_id}"},
+        {"text": "🚫 Пропустить", "callback_data": f"skip:{post_id}"},
+    ]]
+
+    if len(channels) > 1:
+        row = []
+        for idx, ch in enumerate(channels):
+            label = ch if ch.startswith("@") else "основной"
+            row.append({"text": f"📢 {label}", "callback_data": f"ch{idx}:{post_id}"})
+            if len(row) == 2:                      # по две кнопки в ряд
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+
+    rows.append([{"text": "⚡ Дальше автоматом", "callback_data": f"auto:{post_id}"}])
+    return {"inline_keyboard": rows}
 
 
 def auto_off_keyboard() -> dict:
@@ -387,7 +435,7 @@ def check_new_posts(state: dict, cfg: dict) -> int:
 
         draft = f"{text}\n\n— — —\n📝 черновик #{post.id} · оригинал: {post.url}"
         res = send_media(ADMIN, draft, entry["photos"], entry["videos"],
-                         reply_markup=draft_keyboard(post.id),
+                         reply_markup=draft_keyboard(post.id, target_channels(cfg)),
                          preview=bool(cfg.get("link_preview", False)))
 
         if not (res or {}).get("ok"):
