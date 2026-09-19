@@ -89,8 +89,12 @@ def _tidy(text: str) -> str:
     # но пустые строки между абзацами сохраняем
     lines = []
     for line in text.split("\n"):
-        if line.strip() and not line.strip(" -—:·.,|▫️👉🔗📌"):
-            continue
+        bare = line.strip()
+        if bare and not re.search(r"[0-9A-Za-zА-Яа-яЁё]", bare):
+            # строка без единой буквы и цифры: либо осколок вроде «⚠️» от пустой
+            # подстановки, либо разделитель ━━━ — разделитель оставляем
+            if len(set(bare)) > 1 or len(bare) < 4:
+                continue
         lines.append(line)
     text = "\n".join(lines)
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -98,29 +102,56 @@ def _tidy(text: str) -> str:
 
 
 def extract_promo(text: str, cfg: dict) -> dict | None:
-    """Вытаскивает из поста данные промокода. None, если это не промо-пост."""
+    """Вытаскивает из поста данные промокода. None, если это не промо-пост.
+
+    Понимает оба формата: диапазон («от 25 до 1000 ₽», «25 - 1000 RUB»)
+    и один номинал («Промокод — SBER665 50 рублей»).
+    """
     code_re = cfg.get("promo_code_regex") or r"\b([A-Z]{8,14})\b"
     m = re.search(code_re, text)
     if not m:
         return None
     code = m.group(1) if m.groups() else m.group(0)
 
-    data = {"promo": code}
+    unit = cfg.get("bonus_unit", "₽")
+    data = {"promo": code, "amount": ""}
 
-    # ловим и "от 25 до 1000", и "Cумма промокода: 25 - 1000 RUB"
-    amounts = re.search(
+    # диапазон: «от 25 до 1000 ₽» или «25 - 1000 RUB»
+    span = re.search(
         r"(?:от\s*)?(\d[\d\s]*?)\s*(?:до|[-–—])\s*(\d[\d\s]*?)\s*(?:RUB|rub|руб\w*|₽|р\.)",
         text, re.IGNORECASE)
-    if not amounts:
-        amounts = re.search(r"от\s*(\d[\d\s]*?)\s*(?:до|[-–—])\s*(\d[\d\s]*)", text, re.IGNORECASE)
-    if amounts:
-        data["min"] = amounts.group(1).strip()
-        data["max"] = amounts.group(2).strip()
+    if not span:
+        span = re.search(r"от\s*(\d[\d\s]*?)\s*(?:до|[-–—])\s*(\d[\d\s]*)", text, re.IGNORECASE)
+    if span:
+        data["min"] = span.group(1).strip()
+        data["max"] = span.group(2).strip()
+        data["amount"] = f"{data['min']} – {data['max']} {unit}"
+    else:
+        # один номинал: число рядом с кодом или со словом «рублей»
+        one = re.search(re.escape(code) + r"\D{0,20}?(\d[\d\s]*?)\s*(?:RUB|rub|руб\w*|₽|р\.)",
+                        text, re.IGNORECASE)
+        if not one:
+            one = re.search(r"(\d[\d\s]*?)\s*(?:RUB|rub|руб\w*|₽)", text, re.IGNORECASE)
+        if one:
+            data["min"] = data["max"] = one.group(1).strip()
+            data["amount"] = f"{one.group(1).strip()} {unit}"
 
+    # «Активаций: 2250» и «1500 активаций» — число бывает с обеих сторон
     acts = re.search(r"активаци\w*[:\s]*(\d[\d\s]*)", text, re.IGNORECASE)
+    if not acts:
+        acts = re.search(r"(\d[\d\s]*?)\s*активаци", text, re.IGNORECASE)
     if acts:
         data["count"] = acts.group(1).strip()
 
+    # условие вроде «для тех, кто пополнял за 7 дней» — без него код не сработает
+    note = ""
+    for pat in cfg.get("condition_patterns") or []:
+        found = next((l.strip() for l in text.split("\n")
+                      if re.search(pat, l, re.IGNORECASE)), "")
+        if found:
+            note = found
+            break
+    data["note"] = note
     return data
 
 
@@ -158,6 +189,8 @@ def build_post(post: Post, cfg: dict) -> str:
             promo=esc(promo.get("promo", "")),
             min=esc(promo.get("min", "—")),
             max=esc(promo.get("max", "—")),
+            amount=esc(promo.get("amount", "")),
+            note=esc(promo.get("note", "")),
             count=esc(promo.get("count", "—")),
             link=my_link,
         )

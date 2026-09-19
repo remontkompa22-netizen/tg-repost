@@ -249,7 +249,7 @@ def process_callbacks(state: dict, cfg: dict) -> None:
                    text=f"⚠️ Пост #{post_id} не ушёл в {one}. "
                         f"Проверь права бота в этом канале.")
                 continue
-            state.setdefault("published", []).append(int(post_id))
+            state.setdefault("published", []).append(post_id)
             state["pending"].pop(post_id, None)
             tg("answerCallbackQuery", callback_query_id=cq["id"],
                text=f"Опубликовано в {channel_label(one, cfg.get('channel_labels'))}")
@@ -284,7 +284,7 @@ def process_callbacks(state: dict, cfg: dict) -> None:
                         f"Проверь, что бот — админ канала с правом публикации, "
                         f"и нажми «Опубликовать» ещё раз.")
                 continue
-            state.setdefault("published", []).append(int(post_id))
+            state.setdefault("published", []).append(post_id)
             if action == "auto":
                 note = "⚡ Опубликовано, дальше автоматом"
                 alert = "Готово. Следующие промокоды уйдут сами"
@@ -306,6 +306,37 @@ def process_callbacks(state: dict, cfg: dict) -> None:
 
 # ───────────────────────── новые посты ─────────────────────────
 
+def sources(cfg: dict) -> list[dict]:
+    """Проекты, за которыми следим.
+
+    Каждый источник наследует общие настройки конфига и переопределяет свои:
+    канал, ссылку, шапку, промокод новичков, правила распознавания кодов.
+    """
+    base = {k: v for k, v in cfg.items() if k != "sources"}
+    out = []
+    for item in cfg.get("sources") or []:
+        merged = dict(base)
+        merged.update(item)
+        merged.setdefault("name", str(item.get("channel", "источник")))
+        out.append(merged)
+    if not out:                                   # старый конфиг с одним каналом
+        solo = dict(base)
+        solo.setdefault("name", str(cfg.get("source_channel", "источник")))
+        solo["channel"] = cfg.get("source_channel")
+        out.append(solo)
+    return out
+
+
+def source_state(state: dict, name: str) -> dict:
+    """Память по конкретному источнику: какой пост был последним."""
+    box = state.setdefault("sources", {})
+    if name not in box:
+        # переносим старое состояние, когда источник был один
+        box[name] = {"last_post_id": int(state.get("last_post_id", 0))
+                     if len(box) == 0 else 0}
+    return box[name]
+
+
 def channel_label(channel: str, labels: dict | None = None) -> str:
     """Как назвать канал на кнопке.
 
@@ -320,7 +351,7 @@ def channel_label(channel: str, labels: dict | None = None) -> str:
     return channel if channel.startswith("@") else "основной"
 
 
-def draft_keyboard(post_id: int, channels: list[str] | None = None,
+def draft_keyboard(key: str, channels: list[str] | None = None,
                    labels: dict | None = None) -> dict:
     """Кнопки под черновиком.
 
@@ -330,22 +361,22 @@ def draft_keyboard(post_id: int, channels: list[str] | None = None,
     channels = channels or []
     rows = [[
         {"text": "✅ Опубликовать везде" if len(channels) > 1 else "✅ Опубликовать",
-         "callback_data": f"pub:{post_id}"},
-        {"text": "⏸ Стоп", "callback_data": f"stop:{post_id}"},
+         "callback_data": f"pub:{key}"},
+        {"text": "⏸ Стоп", "callback_data": f"stop:{key}"},
     ]]
 
     if len(channels) > 1:
         row = []
         for idx, ch in enumerate(channels):
             row.append({"text": f"📢 {channel_label(ch, labels)}",
-                        "callback_data": f"ch{idx}:{post_id}"})
+                        "callback_data": f"ch{idx}:{key}"})
             if len(row) == 2:                      # по две кнопки в ряд
                 rows.append(row)
                 row = []
         if row:
             rows.append(row)
 
-    rows.append([{"text": "⚡ Дальше автоматом", "callback_data": f"auto:{post_id}"}])
+    rows.append([{"text": "⚡ Дальше автоматом", "callback_data": f"auto:{key}"}])
     return {"inline_keyboard": rows}
 
 
@@ -406,109 +437,123 @@ def publish_everywhere(text: str, photos: list[str], videos: list[str],
     return links, failed
 
 
-def check_new_posts(state: dict, cfg: dict) -> int:
-    posts: list[Post] = fetch_posts(cfg["source_channel"])
-    posts = posts[-int(cfg.get("posts_per_check", 20)):]
+def check_one_source(state: dict, cfg: dict, src_cfg: dict) -> int:
+    """Проверяет один канал-источник и обрабатывает его новые посты."""
+    name = src_cfg["name"]
+    channel = src_cfg["channel"]
+    mem = source_state(state, name)
+
+    posts: list[Post] = fetch_posts(channel)
+    posts = posts[-int(src_cfg.get("posts_per_check", 20)):]
     if not posts:
-        print("Постов на странице не найдено — возможно, изменилась вёрстка")
+        print(f"[{name}] постов не найдено — возможно, изменилась вёрстка")
         return 0
 
-    last_seen = int(state.get("last_post_id", 0))
+    last_seen = int(mem.get("last_post_id", 0))
 
     if last_seen == 0:
-        # первый запуск: не вываливаем в личку весь архив
-        mode = cfg.get("first_run", "skip")
-        state["last_post_id"] = posts[-1].id
-        if mode == "last":
+        mem["last_post_id"] = posts[-1].id
+        if src_cfg.get("first_run", "skip") == "last":
             posts = posts[-1:]
-            state["last_post_id"] = posts[-1].id - 1
-            last_seen = posts[-1].id - 1
+            mem["last_post_id"] = last_seen = posts[-1].id - 1
         else:
-            print(f"Первый запуск: запомнили пост #{posts[-1].id}, ничего не шлём")
+            print(f"[{name}] первый запуск: запомнили пост #{posts[-1].id}")
             return 0
 
     fresh = [p for p in posts if p.id > last_seen]
     if not fresh:
-        print("Новых постов нет")
+        print(f"[{name}] новых постов нет")
         return 0
 
     if state.get("paused"):
-        # на паузе отмечаем посты просмотренными: промокоды живут недолго,
-        # и вываливать пачку протухших после возврата смысла нет
-        state["last_post_id"] = max(int(state.get("last_post_id", 0)),
-                                    max(p.id for p in fresh))
-        print(f"Бот на паузе, пропущено постов: {len(fresh)}")
+        mem["last_post_id"] = max(last_seen, max(p.id for p in fresh))
+        print(f"[{name}] бот на паузе, пропущено постов: {len(fresh)}")
         return 0
 
-    keep_media = bool(cfg.get("keep_media", True))
-    only_promo = bool(cfg.get("only_promo_posts", True))
+    keep_media = bool(src_cfg.get("keep_media", True))
+    only_promo = bool(src_cfg.get("only_promo_posts", True))
     auto_mode = bool(state.get("auto", cfg.get("auto_publish", False)))
     sent = 0
+
     for post in fresh:
-        # посты без промокода (объявления, смена домена) пропускаем целиком
-        if only_promo and not extract_promo(post.text, cfg):
-            print(f"Пост #{post.id} без промокода — пропускаем")
-            state["last_post_id"] = max(state["last_post_id"], post.id)
+        if only_promo and not extract_promo(post.text, src_cfg):
+            print(f"[{name}] пост #{post.id} без промокода — пропускаем")
+            mem["last_post_id"] = max(mem["last_post_id"], post.id)
             continue
 
-        text = build_post(post, cfg)
+        text = build_post(post, src_cfg)
         if not text.strip():
-            print(f"Пост #{post.id} после правок оказался пустым — пропускаем")
-            state["last_post_id"] = max(state["last_post_id"], post.id)
+            print(f"[{name}] пост #{post.id} после правок пуст — пропускаем")
+            mem["last_post_id"] = max(mem["last_post_id"], post.id)
             continue
 
+        key = f"{name}:{post.id}"                  # ключ уникален между источниками
         entry = {
             "text": text,
             "photos": post.photos if keep_media else [],
             "videos": post.videos if keep_media else [],
             "source": post.url,
+            "from": name,
         }
 
         if auto_mode:
-            # режим «дальше автоматом»: публикуем сразу, а в личку — короткий отчёт
             links, failed = publish_everywhere(
                 text, entry["photos"], entry["videos"], cfg)
             if failed and links:
                 tg("sendMessage", chat_id=ADMIN,
                    text="⚠️ Опубликовано не везде. Не приняли: " + ", ".join(failed))
             if not links:
-                print(f"Автопубликация поста #{post.id} не удалась, повторим позже",
+                print(f"[{name}] автопубликация #{post.id} не удалась, повторим позже",
                       file=sys.stderr)
                 tg("sendMessage", chat_id=ADMIN,
-                   text=f"⚠️ Не удалось опубликовать пост #{post.id} автоматически. "
-                        f"Попробую ещё раз при следующей проверке.")
+                   text=f"⚠️ Не удалось опубликовать пост #{post.id} ({name}) "
+                        f"автоматически. Попробую ещё раз при следующей проверке.")
                 continue
-            promo = extract_promo(post.text, cfg) or {}
+            promo = extract_promo(post.text, src_cfg) or {}
             tg("sendMessage", chat_id=ADMIN, parse_mode="HTML",
                disable_web_page_preview=True,
-               text=f"⚡ Опубликовано автоматически: <code>{promo.get('promo', '')}</code>"
+               text=f"⚡ Опубликовано автоматически ({name}): "
+                    f"<code>{promo.get('promo', '')}</code>"
                     + ("\n" + "\n".join(links) if links else ""),
                reply_markup=auto_off_keyboard())
             state.setdefault("published", []).append(post.id)
-            state["last_post_id"] = max(state["last_post_id"], post.id)
+            mem["last_post_id"] = max(mem["last_post_id"], post.id)
             sent += 1
             time.sleep(0.5)
             continue
 
-        draft = f"{text}\n\n— — —\n📝 черновик #{post.id} · оригинал: {post.url}"
+        draft = (f"{text}\n\n— — —\n"
+                 f"📝 черновик #{post.id} · {name} · оригинал: {post.url}")
         res = send_media(ADMIN, draft, entry["photos"], entry["videos"],
-                         reply_markup=draft_keyboard(post.id, target_channels(cfg),
+                         reply_markup=draft_keyboard(key, target_channels(cfg),
                                                      cfg.get("channel_labels")),
                          preview=bool(cfg.get("link_preview", False)))
-
         if not (res or {}).get("ok"):
-            # черновик не дошёл — не помечаем пост обработанным,
-            # попробуем ещё раз при следующем запуске
-            print(f"Черновик #{post.id} не отправлен, повторим позже", file=sys.stderr)
+            print(f"[{name}] черновик #{post.id} не отправлен, повторим позже",
+                  file=sys.stderr)
             continue
 
-        state.setdefault("pending", {})[str(post.id)] = entry
-        state["last_post_id"] = max(state["last_post_id"], post.id)
+        state.setdefault("pending", {})[key] = entry
+        mem["last_post_id"] = max(mem["last_post_id"], post.id)
         sent += 1
         time.sleep(0.5)
 
-    print(f"{'Опубликовано автоматически' if auto_mode else 'Отправлено черновиков'}: {sent}")
+    if sent:
+        print(f"[{name}] {'опубликовано' if auto_mode else 'черновиков'}: {sent}")
     return sent
+
+
+def check_new_posts(state: dict, cfg: dict) -> int:
+    """Обходит все источники по очереди."""
+    total = 0
+    for src_cfg in sources(cfg):
+        if not src_cfg.get("channel"):
+            continue
+        try:
+            total += check_one_source(state, cfg, src_cfg)
+        except Exception as exc:                   # один источник не должен ронять остальные
+            print(f"[{src_cfg.get('name')}] ошибка: {exc}", file=sys.stderr)
+    return total
 
 
 # ───────────────────────── точка входа ─────────────────────────
