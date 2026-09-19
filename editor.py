@@ -40,23 +40,25 @@ def _strip_stop_lines(text: str, patterns: list[str], keep_link: str = "") -> st
 
 
 def _replace_links(text: str, replacements: dict[str, str], default_link: str | None) -> str:
-    # 1) точечные замены, заданные в конфиге
-    for src, dst in (replacements or {}).items():
-        text = re.sub(re.escape(src) + r"/?", dst, text, flags=re.IGNORECASE)
-    # 2) всё, что осталось от чужих доменов, — на свою ссылку
-    if default_link:
-        own_host = default_link.split("//")[-1].split("/")[0]
+    """Меняет чужие ссылки на твою.
 
-        def sub_url(m: re.Match) -> str:
-            url = m.group(0)
-            if own_host and own_host in url:
-                return url          # свою ссылку не трогаем
-            if "t.me/" in url:
-                return url          # телеграм-ссылки обрабатываются отдельно
-            return default_link
+    Работает по целым адресам, а не по кускам строки: иначе, если твоя ссылка
+    живёт на том же домене, что и чужая, к ней приклеился бы второй хвост.
+    """
+    reps = {k.rstrip("/"): v for k, v in (replacements or {}).items()}
 
-        text = re.sub(r"https?://[^\s\)\]]+", sub_url, text)
-    return text
+    def sub_url(m: re.Match) -> str:
+        url = m.group(0)
+        if default_link and url.startswith(default_link):
+            return url                     # это уже твоя ссылка
+        if "t.me/" in url:
+            return url                     # телеграм-ссылки чистятся отдельно
+        for srcu, dst in reps.items():
+            if url.rstrip("/").startswith(srcu):
+                return dst                 # точечная замена из конфига
+        return default_link or url
+
+    return re.sub(r"https?://[^\s\)\]]+", sub_url, text)
 
 
 def _strip_mentions(text: str, keep: list[str]) -> str:
