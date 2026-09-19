@@ -207,10 +207,16 @@ def process_callbacks(state: dict, cfg: dict) -> None:
             state["auto"] = True
 
         if action in ("pub", "auto"):
-            res = send_media(CHANNEL, entry["text"], entry.get("photos", []),
-                             entry.get("videos", []),
-                             preview=bool(cfg.get("link_preview", False)))
-            if not (res or {}).get("ok"):
+            links, failed = publish_everywhere(
+                entry["text"], entry.get("photos", []), entry.get("videos", []), cfg)
+            if failed and links:
+                # часть каналов приняла пост, часть нет — сообщаем, но не повторяем,
+                # иначе в удачные каналы улетит дубль
+                tg("sendMessage", chat_id=ADMIN,
+                   text="⚠️ Опубликовано не везде. Не приняли: "
+                        + ", ".join(failed)
+                        + ". Проверь, что бот — админ там с правом публикации.")
+            if not links:
                 # в канал не ушло — черновик остаётся в очереди,
                 # предупреждаем в личку, потому что всплывашка могла устареть
                 print(f"Пост #{post_id} опубликовать не удалось", file=sys.stderr)
@@ -264,12 +270,43 @@ def auto_off_keyboard() -> dict:
     ]]}
 
 
-def channel_post_link(res: dict) -> str:
+def channel_post_link(res: dict, channel: str) -> str:
     """Ссылка на только что опубликованный пост, если канал публичный."""
     mid = ((res or {}).get("result") or {}).get("message_id")
-    if mid and CHANNEL.startswith("@"):
-        return f"https://t.me/{CHANNEL.lstrip('@')}/{mid}"
+    if mid and channel.startswith("@"):
+        return f"https://t.me/{channel.lstrip('@')}/{mid}"
     return ""
+
+
+def target_channels(cfg: dict) -> list[str]:
+    """Все каналы для публикации: основной из секрета плюс список из конфига."""
+    out, seen = [], set()
+    for ch in [CHANNEL, *(cfg.get("extra_channels") or [])]:
+        ch = str(ch or "").strip()
+        if ch and ch not in seen:
+            seen.add(ch)
+            out.append(ch)
+    return out
+
+
+def publish_everywhere(text: str, photos: list[str], videos: list[str],
+                       cfg: dict) -> tuple[list[str], list[str]]:
+    """Рассылает пост по всем каналам.
+
+    Возвращает ссылки на удачные публикации и список каналов, куда не ушло.
+    """
+    links, failed = [], []
+    for ch in target_channels(cfg):
+        res = send_media(ch, text, photos, videos,
+                         preview=bool(cfg.get("link_preview", False)))
+        if (res or {}).get("ok"):
+            link = channel_post_link(res, ch)
+            links.append(link or ch)
+        else:
+            print(f"В канал {ch} опубликовать не удалось", file=sys.stderr)
+            failed.append(ch)
+        time.sleep(0.3)
+    return links, failed
 
 
 def check_new_posts(state: dict, cfg: dict) -> int:
@@ -324,9 +361,12 @@ def check_new_posts(state: dict, cfg: dict) -> int:
 
         if auto_mode:
             # режим «дальше автоматом»: публикуем сразу, а в личку — короткий отчёт
-            res = send_media(CHANNEL, text, entry["photos"], entry["videos"],
-                             preview=bool(cfg.get("link_preview", False)))
-            if not (res or {}).get("ok"):
+            links, failed = publish_everywhere(
+                text, entry["photos"], entry["videos"], cfg)
+            if failed and links:
+                tg("sendMessage", chat_id=ADMIN,
+                   text="⚠️ Опубликовано не везде. Не приняли: " + ", ".join(failed))
+            if not links:
                 print(f"Автопубликация поста #{post.id} не удалась, повторим позже",
                       file=sys.stderr)
                 tg("sendMessage", chat_id=ADMIN,
@@ -334,11 +374,10 @@ def check_new_posts(state: dict, cfg: dict) -> int:
                         f"Попробую ещё раз при следующей проверке.")
                 continue
             promo = extract_promo(post.text, cfg) or {}
-            link = channel_post_link(res)
             tg("sendMessage", chat_id=ADMIN, parse_mode="HTML",
                disable_web_page_preview=True,
                text=f"⚡ Опубликовано автоматически: <code>{promo.get('promo', '')}</code>"
-                    + (f"\n{link}" if link else ""),
+                    + ("\n" + "\n".join(links) if links else ""),
                reply_markup=auto_off_keyboard())
             state.setdefault("published", []).append(post.id)
             state["last_post_id"] = max(state["last_post_id"], post.id)
