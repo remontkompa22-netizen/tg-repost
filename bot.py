@@ -225,10 +225,10 @@ def process_callbacks(state: dict, cfg: dict) -> None:
             state.setdefault("published", []).append(int(post_id))
             state["pending"].pop(post_id, None)
             tg("answerCallbackQuery", callback_query_id=cq["id"],
-               text=f"Опубликовано в {one}")
+               text=f"Опубликовано в {channel_label(one, cfg.get('channel_labels'))}")
             if chat_id and message_id:
                 tg("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,
-                   reply_markup={"inline_keyboard": [[{"text": f"✅ Ушло в {one}",
+                   reply_markup={"inline_keyboard": [[{"text": f"✅ Ушло в {channel_label(one, cfg.get('channel_labels'))}",
                                                        "callback_data": "done"}]]})
             time.sleep(0.4)
             continue
@@ -279,7 +279,22 @@ def process_callbacks(state: dict, cfg: dict) -> None:
 
 # ───────────────────────── новые посты ─────────────────────────
 
-def draft_keyboard(post_id: int, channels: list[str] | None = None) -> dict:
+def channel_label(channel: str, labels: dict | None = None) -> str:
+    """Как назвать канал на кнопке.
+
+    Подпись берётся из конфига: ключ — @имя канала, либо main для основного,
+    который задан секретом CHANNEL_ID числовым id и своего имени не имеет.
+    """
+    labels = {str(k): str(v) for k, v in (labels or {}).items()}
+    if channel in labels:
+        return labels[channel]
+    if channel == CHANNEL and "main" in labels:
+        return labels["main"]
+    return channel if channel.startswith("@") else "основной"
+
+
+def draft_keyboard(post_id: int, channels: list[str] | None = None,
+                   labels: dict | None = None) -> dict:
     """Кнопки под черновиком.
 
     Верхний ряд — опубликовать сразу везде или пропустить. Средний появляется,
@@ -295,8 +310,8 @@ def draft_keyboard(post_id: int, channels: list[str] | None = None) -> dict:
     if len(channels) > 1:
         row = []
         for idx, ch in enumerate(channels):
-            label = ch if ch.startswith("@") else "основной"
-            row.append({"text": f"📢 {label}", "callback_data": f"ch{idx}:{post_id}"})
+            row.append({"text": f"📢 {channel_label(ch, labels)}",
+                        "callback_data": f"ch{idx}:{post_id}"})
             if len(row) == 2:                      # по две кнопки в ряд
                 rows.append(row)
                 row = []
@@ -435,7 +450,8 @@ def check_new_posts(state: dict, cfg: dict) -> int:
 
         draft = f"{text}\n\n— — —\n📝 черновик #{post.id} · оригинал: {post.url}"
         res = send_media(ADMIN, draft, entry["photos"], entry["videos"],
-                         reply_markup=draft_keyboard(post.id, target_channels(cfg)),
+                         reply_markup=draft_keyboard(post.id, target_channels(cfg),
+                                                     cfg.get("channel_labels")),
                          preview=bool(cfg.get("link_preview", False)))
 
         if not (res or {}).get("ok"):

@@ -107,3 +107,10 @@ auto_publish: false
 # с правом «Публикация сообщений».
 extra_channels:
   - "@mishka_azart"
+
+# ─── ПОДПИСИ КНОПОК КАНАЛОВ ─────────────────────────────────────
+# Как канал называется на кнопке черновика.
+# main — основной канал из секрета CHANNEL_ID, остальные по @имени.
+channel_labels:
+  main: "betlive"
+  "@mishka_azart": "mishka azart"
