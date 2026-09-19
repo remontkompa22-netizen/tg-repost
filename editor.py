@@ -107,12 +107,17 @@ def extract_promo(text: str, cfg: dict) -> dict | None:
 
     data = {"promo": code}
 
-    amounts = re.search(r"от\s*([\d\s]+)\s*(?:до|-|—)\s*([\d\s]+)", text, re.IGNORECASE)
+    # ловим и "от 25 до 1000", и "Cумма промокода: 25 - 1000 RUB"
+    amounts = re.search(
+        r"(?:от\s*)?(\d[\d\s]*?)\s*(?:до|[-–—])\s*(\d[\d\s]*?)\s*(?:RUB|rub|руб\w*|₽|р\.)",
+        text, re.IGNORECASE)
+    if not amounts:
+        amounts = re.search(r"от\s*(\d[\d\s]*?)\s*(?:до|[-–—])\s*(\d[\d\s]*)", text, re.IGNORECASE)
     if amounts:
         data["min"] = amounts.group(1).strip()
         data["max"] = amounts.group(2).strip()
 
-    acts = re.search(r"активаци\w*[:\s]*([\d\s]+)", text, re.IGNORECASE)
+    acts = re.search(r"активаци\w*[:\s]*(\d[\d\s]*)", text, re.IGNORECASE)
     if acts:
         data["count"] = acts.group(1).strip()
 
