@@ -17,7 +17,7 @@ first_run: skip
 # ─── ТВОЯ ССЫЛКА ────────────────────────────────────────────────
 # Сюда подставь свою партнёрскую ссылку. Она заменит все чужие
 # ссылки в посте и попадёт в шаблон промокода.
-my_link: "https://example.com/твоя-ссылка"
+my_link: "https://wilder.black/wiEwGMIfSm"
 
 # ─── ШАПКА СО СКРЫТОЙ ССЫЛКОЙ ──────────────────────────────────
 # Первая строка поста. Ссылка прячется под этим текстом — адрес не виден,
@@ -37,9 +37,9 @@ newbie_block: |
 
 # Точечные замены: что на что. Срабатывают раньше общего правила.
 link_replacements:
-  "https://wilder21.win/bonus": "https://example.com/твоя-ссылка"
-  "https://wilder21.win": "https://example.com/твоя-ссылка"
-  "https://wilder.black": "https://example.com/твоя-ссылка"
+  "https://wilder21.win/bonus": "https://wilder.black/wiEwGMIfSm"
+  "https://wilder21.win": "https://wilder.black/wiEwGMIfSm"
+  "https://wilder.black": "https://wilder.black/wiEwGMIfSm"
 
 # ─── ЧИСТКА ЧУЖОГО ──────────────────────────────────────────────
 # Строки, содержащие эти куски, выбрасываются целиком
