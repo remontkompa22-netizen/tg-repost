@@ -35,10 +35,10 @@ sources:
     promo_code_regex: "\\b([A-Z]{3,10}\\d{2,6})\\b"   # коды вида SBER665, DEPS560
     # строки с условиями переносим в пост — без них код у людей не сработает
     condition_patterns:
-      - "депозит"
+      - "только для"
       - "для тех"
-      - "\\d+\\s*дн"
-      - "пополн"
+      - "кто пополн"
+      - "кто делал депозит"
     link_replacements:
       "https://cabura.cooking": "https://caburka.click/?ref=239049"
       "https://caburka.click": "https://caburka.click/?ref=239049"
