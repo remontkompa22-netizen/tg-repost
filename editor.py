@@ -238,11 +238,17 @@ def build_post(post: Post, cfg: dict) -> str:
 
     body = _tidy(body)
 
+    top = _header(cfg, my_link)
+    note = (cfg.get("header_note") or "").strip().format(link=my_link)
+    if top and note:
+        top = top + "\n" + note          # строка-приписка сразу под шапкой
+    elif note:
+        top = note
+
     parts = [
-        _header(cfg, my_link),
+        top,
         body,
         _newbie_block(cfg, my_link),
-        (cfg.get("footer_note") or "").strip().format(link=my_link),
         (cfg.get("signature") or "").strip(),
     ]
     return "\n\n".join(p for p in parts if p and p.strip()).strip()
