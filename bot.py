@@ -70,6 +70,36 @@ def tg(method: str, **params):
     return data
 
 
+def tg_upload(method: str, chat_id: str, kind: str, url: str, caption: str | None,
+              reply_markup: dict | None) -> dict:
+    """Скачивает медиа сами и отправляет файлом.
+
+    Телеграм умеет забирать картинку по ссылке, но со своего же CDN (telesco.pe)
+    у него это не получается — приходится качать и загружать вручную.
+    """
+    if DRY_RUN:
+        print(f"[DRY_RUN] upload {method}: {url[:60]}")
+        return {"ok": True, "result": {}}
+    try:
+        blob = requests.get(url, timeout=60)
+        blob.raise_for_status()
+    except Exception as exc:                       # сеть, 404, таймаут
+        print(f"Не удалось скачать медиа {url[:60]}: {exc}", file=sys.stderr)
+        return {"ok": False}
+    ext = "mp4" if kind == "video" else "jpg"
+    data = {"chat_id": chat_id, "parse_mode": "HTML"}
+    if caption:
+        data["caption"] = caption
+    if reply_markup:
+        data["reply_markup"] = json.dumps(reply_markup)
+    resp = requests.post(f"{API}/{method}", data=data,
+                         files={kind: (f"media.{ext}", blob.content)}, timeout=120)
+    out = resp.json()
+    if not out.get("ok"):
+        print(f"Загрузка файлом не удалась: {out}", file=sys.stderr)
+    return out
+
+
 def send_media(chat_id: str, text: str, photos: list[str], videos: list[str],
                reply_markup: dict | None = None, preview: bool = False) -> dict:
     """Отправляет пост с учётом лимитов Telegram на длину подписи.
@@ -95,18 +125,34 @@ def send_media(chat_id: str, text: str, photos: list[str], videos: list[str],
             params["caption"] = text
             params.update(markup)
         res = tg(method, **params)
+        if not res.get("ok"):
+            # телеграм не смог забрать файл по ссылке — качаем и грузим сами
+            res = tg_upload(method, chat_id, kind, url,
+                            text if caption_fits else None,
+                            reply_markup if caption_fits else None)
+        if not res.get("ok"):
+            # медиа так и не ушло — отправляем хотя бы текст
+            print("Медиа отправить не вышло, шлём текстом", file=sys.stderr)
+            return tg("sendMessage", chat_id=chat_id, text=text[:TEXT_LIMIT],
+                      parse_mode="HTML", disable_web_page_preview=not preview,
+                      **markup)
         if not caption_fits:
             res = tg("sendMessage", chat_id=chat_id, text=text[:TEXT_LIMIT],
                      parse_mode="HTML", disable_web_page_preview=not preview,
                      **markup)
         return res
 
-    # несколько файлов — альбомом; у альбома не бывает кнопок, поэтому текст с кнопками уходит отдельным сообщением
+    # несколько файлов — альбомом; у альбома не бывает кнопок,
+    # поэтому текст с кнопками уходит отдельным сообщением
     group = [{"type": k, "media": u} for k, u in media[:10]]
     if caption_fits and not reply_markup:
         group[0]["caption"] = text
         group[0]["parse_mode"] = "HTML"
-        return tg("sendMediaGroup", chat_id=chat_id, media=group)
+        res = tg("sendMediaGroup", chat_id=chat_id, media=group)
+        if res.get("ok"):
+            return res
+        return tg("sendMessage", chat_id=chat_id, text=text[:TEXT_LIMIT],
+                  parse_mode="HTML", disable_web_page_preview=not preview, **markup)
     tg("sendMediaGroup", chat_id=chat_id, media=group)
     return tg("sendMessage", chat_id=chat_id, text=text[:TEXT_LIMIT],
               parse_mode="HTML", disable_web_page_preview=not preview, **markup)
@@ -224,9 +270,15 @@ def check_new_posts(state: dict, cfg: dict) -> int:
             "source": post.url,
         }
         draft = f"{text}\n\n— — —\n📝 черновик #{post.id} · оригинал: {post.url}"
-        send_media(ADMIN, draft, entry["photos"], entry["videos"],
-                   reply_markup=draft_keyboard(post.id),
-                   preview=bool(cfg.get("link_preview", False)))
+        res = send_media(ADMIN, draft, entry["photos"], entry["videos"],
+                         reply_markup=draft_keyboard(post.id),
+                         preview=bool(cfg.get("link_preview", False)))
+
+        if not (res or {}).get("ok"):
+            # черновик не дошёл — не помечаем пост обработанным,
+            # попробуем ещё раз при следующем запуске
+            print(f"Черновик #{post.id} не отправлен, повторим позже", file=sys.stderr)
+            continue
 
         state.setdefault("pending", {})[str(post.id)] = entry
         state["last_post_id"] = max(state["last_post_id"], post.id)
