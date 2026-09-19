@@ -187,9 +187,36 @@ def process_callbacks(state: dict, cfg: dict) -> None:
         chat_id = msg.get("chat", {}).get("id")
         message_id = msg.get("message_id")
 
-        if not entry and action != "manual":
+        if not entry and action not in ("manual", "resume", "stop"):
             tg("answerCallbackQuery", callback_query_id=cq["id"],
                text="Этот черновик уже обработан")
+            continue
+
+        if action == "resume":
+            state["paused"] = False
+            tg("answerCallbackQuery", callback_query_id=cq["id"],
+               text="Снова слежу за каналом")
+            if chat_id and message_id:
+                tg("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,
+                   reply_markup={"inline_keyboard": [[{"text": "▶️ Бот работает",
+                                                       "callback_data": "done"}]]})
+            continue
+
+        if action == "stop":
+            # этот пост не публикуем и бота ставим на паузу
+            state["paused"] = True
+            state.get("pending", {}).pop(post_id, None)
+            tg("answerCallbackQuery", callback_query_id=cq["id"],
+               text="Бот остановлен")
+            if chat_id and message_id:
+                tg("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,
+                   reply_markup={"inline_keyboard": [[{"text": "⏸ Остановлен",
+                                                       "callback_data": "done"}]]})
+            tg("sendMessage", chat_id=ADMIN,
+               text="⏸ Бот на паузе. Новые промокоды приходить не будут — "
+                    "те, что выйдут за это время, пропущу. Нажми «Продолжить», "
+                    "когда снова понадоблюсь.",
+               reply_markup=resume_keyboard())
             continue
 
         if action == "manual":
@@ -304,7 +331,7 @@ def draft_keyboard(post_id: int, channels: list[str] | None = None,
     rows = [[
         {"text": "✅ Опубликовать везде" if len(channels) > 1 else "✅ Опубликовать",
          "callback_data": f"pub:{post_id}"},
-        {"text": "🚫 Пропустить", "callback_data": f"skip:{post_id}"},
+        {"text": "⏸ Стоп", "callback_data": f"stop:{post_id}"},
     ]]
 
     if len(channels) > 1:
@@ -320,6 +347,13 @@ def draft_keyboard(post_id: int, channels: list[str] | None = None,
 
     rows.append([{"text": "⚡ Дальше автоматом", "callback_data": f"auto:{post_id}"}])
     return {"inline_keyboard": rows}
+
+
+def resume_keyboard() -> dict:
+    """Кнопка, которой бота будят после паузы."""
+    return {"inline_keyboard": [[
+        {"text": "▶️ Продолжить", "callback_data": "resume:0"},
+    ]]}
 
 
 def auto_off_keyboard() -> dict:
@@ -396,6 +430,14 @@ def check_new_posts(state: dict, cfg: dict) -> int:
     fresh = [p for p in posts if p.id > last_seen]
     if not fresh:
         print("Новых постов нет")
+        return 0
+
+    if state.get("paused"):
+        # на паузе отмечаем посты просмотренными: промокоды живут недолго,
+        # и вываливать пачку протухших после возврата смысла нет
+        state["last_post_id"] = max(int(state.get("last_post_id", 0)),
+                                    max(p.id for p in fresh))
+        print(f"Бот на паузе, пропущено постов: {len(fresh)}")
         return 0
 
     keep_media = bool(cfg.get("keep_media", True))
