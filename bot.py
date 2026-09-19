@@ -187,12 +187,26 @@ def process_callbacks(state: dict, cfg: dict) -> None:
         chat_id = msg.get("chat", {}).get("id")
         message_id = msg.get("message_id")
 
-        if not entry:
+        if not entry and action != "manual":
             tg("answerCallbackQuery", callback_query_id=cq["id"],
                text="Этот черновик уже обработан")
             continue
 
-        if action == "pub":
+        if action == "manual":
+            # выключаем автопубликацию из уведомления
+            state["auto"] = False
+            tg("answerCallbackQuery", callback_query_id=cq["id"],
+               text="Снова буду спрашивать перед публикацией")
+            if chat_id and message_id:
+                tg("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,
+                   reply_markup={"inline_keyboard": [[{"text": "⏸ Подтверждение включено",
+                                                       "callback_data": "done"}]]})
+            continue
+
+        if action == "auto":
+            state["auto"] = True
+
+        if action in ("pub", "auto"):
             res = send_media(CHANNEL, entry["text"], entry.get("photos", []),
                              entry.get("videos", []),
                              preview=bool(cfg.get("link_preview", False)))
@@ -208,7 +222,11 @@ def process_callbacks(state: dict, cfg: dict) -> None:
                         f"и нажми «Опубликовать» ещё раз.")
                 continue
             state.setdefault("published", []).append(int(post_id))
-            note, alert = "✅ Опубликовано", "Пост ушёл в канал"
+            if action == "auto":
+                note = "⚡ Опубликовано, дальше автоматом"
+                alert = "Готово. Следующие промокоды уйдут сами"
+            else:
+                note, alert = "✅ Опубликовано", "Пост ушёл в канал"
         elif action == "skip":
             note, alert = "🚫 Пропущено", "Пост пропущен"
         else:
@@ -226,10 +244,32 @@ def process_callbacks(state: dict, cfg: dict) -> None:
 # ───────────────────────── новые посты ─────────────────────────
 
 def draft_keyboard(post_id: int) -> dict:
+    return {"inline_keyboard": [
+        [
+            {"text": "✅ Опубликовать", "callback_data": f"pub:{post_id}"},
+            {"text": "🚫 Пропустить", "callback_data": f"skip:{post_id}"},
+        ],
+        [{"text": "⚡ Дальше автоматом", "callback_data": f"auto:{post_id}"}],
+    ]}
+
+
+def auto_off_keyboard() -> dict:
+    """Кнопка возврата к ручному подтверждению.
+
+    Без неё выключить автопубликацию было бы негде: черновики перестают
+    приходить, а вместе с ними исчезают и кнопки.
+    """
     return {"inline_keyboard": [[
-        {"text": "✅ Опубликовать", "callback_data": f"pub:{post_id}"},
-        {"text": "🚫 Пропустить", "callback_data": f"skip:{post_id}"},
+        {"text": "⏸ Вернуть подтверждение", "callback_data": "manual:0"},
     ]]}
+
+
+def channel_post_link(res: dict) -> str:
+    """Ссылка на только что опубликованный пост, если канал публичный."""
+    mid = ((res or {}).get("result") or {}).get("message_id")
+    if mid and CHANNEL.startswith("@"):
+        return f"https://t.me/{CHANNEL.lstrip('@')}/{mid}"
+    return ""
 
 
 def check_new_posts(state: dict, cfg: dict) -> int:
@@ -260,6 +300,7 @@ def check_new_posts(state: dict, cfg: dict) -> int:
 
     keep_media = bool(cfg.get("keep_media", True))
     only_promo = bool(cfg.get("only_promo_posts", True))
+    auto_mode = bool(state.get("auto", cfg.get("auto_publish", False)))
     sent = 0
     for post in fresh:
         # посты без промокода (объявления, смена домена) пропускаем целиком
@@ -280,6 +321,31 @@ def check_new_posts(state: dict, cfg: dict) -> int:
             "videos": post.videos if keep_media else [],
             "source": post.url,
         }
+
+        if auto_mode:
+            # режим «дальше автоматом»: публикуем сразу, а в личку — короткий отчёт
+            res = send_media(CHANNEL, text, entry["photos"], entry["videos"],
+                             preview=bool(cfg.get("link_preview", False)))
+            if not (res or {}).get("ok"):
+                print(f"Автопубликация поста #{post.id} не удалась, повторим позже",
+                      file=sys.stderr)
+                tg("sendMessage", chat_id=ADMIN,
+                   text=f"⚠️ Не удалось опубликовать пост #{post.id} автоматически. "
+                        f"Попробую ещё раз при следующей проверке.")
+                continue
+            promo = extract_promo(post.text, cfg) or {}
+            link = channel_post_link(res)
+            tg("sendMessage", chat_id=ADMIN, parse_mode="HTML",
+               disable_web_page_preview=True,
+               text=f"⚡ Опубликовано автоматически: <code>{promo.get('promo', '')}</code>"
+                    + (f"\n{link}" if link else ""),
+               reply_markup=auto_off_keyboard())
+            state.setdefault("published", []).append(post.id)
+            state["last_post_id"] = max(state["last_post_id"], post.id)
+            sent += 1
+            time.sleep(0.5)
+            continue
+
         draft = f"{text}\n\n— — —\n📝 черновик #{post.id} · оригинал: {post.url}"
         res = send_media(ADMIN, draft, entry["photos"], entry["videos"],
                          reply_markup=draft_keyboard(post.id),
@@ -296,7 +362,7 @@ def check_new_posts(state: dict, cfg: dict) -> int:
         sent += 1
         time.sleep(0.5)
 
-    print(f"Отправлено черновиков: {sent}")
+    print(f"{'Опубликовано автоматически' if auto_mode else 'Отправлено черновиков'}: {sent}")
     return sent
 
 
