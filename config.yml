@@ -67,7 +67,7 @@ word_replacements:
 use_promo_template: true
 promo_code_regex: "\\b([A-Z]{8,14})\\b"
 promo_template: |
-  🎁 Свежий промокод: {promo}
+  🎁 Свежий промокод: <code>{promo}</code>
 
   💰 Бонус: от {min} до {max} ₽
   🎫 Активаций: {count}

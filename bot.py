@@ -193,9 +193,20 @@ def process_callbacks(state: dict, cfg: dict) -> None:
             continue
 
         if action == "pub":
-            send_media(CHANNEL, entry["text"], entry.get("photos", []),
-                       entry.get("videos", []),
-                       preview=bool(cfg.get("link_preview", False)))
+            res = send_media(CHANNEL, entry["text"], entry.get("photos", []),
+                             entry.get("videos", []),
+                             preview=bool(cfg.get("link_preview", False)))
+            if not (res or {}).get("ok"):
+                # в канал не ушло — черновик остаётся в очереди,
+                # предупреждаем в личку, потому что всплывашка могла устареть
+                print(f"Пост #{post_id} опубликовать не удалось", file=sys.stderr)
+                tg("answerCallbackQuery", callback_query_id=cq["id"],
+                   text="Не удалось опубликовать, нажми ещё раз")
+                tg("sendMessage", chat_id=ADMIN,
+                   text=f"⚠️ Пост #{post_id} не ушёл в канал. "
+                        f"Проверь, что бот — админ канала с правом публикации, "
+                        f"и нажми «Опубликовать» ещё раз.")
+                continue
             state.setdefault("published", []).append(int(post_id))
             note, alert = "✅ Опубликовано", "Пост ушёл в канал"
         elif action == "skip":
