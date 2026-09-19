@@ -45,6 +45,8 @@ sources:
     link_replacements:
       "https://cabura.cooking": "https://caburka.click/?ref=239049"
       "https://caburka.click": "https://caburka.click/?ref=239049"
+    # строка, которая приклеивается к низу каждого поста этого источника
+    footer_note: "📲 Заходить через ТГ +100FS"
     drop_lines_matching:
       - "подписыва"
       - "подписаться"

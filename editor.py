@@ -242,6 +242,7 @@ def build_post(post: Post, cfg: dict) -> str:
         _header(cfg, my_link),
         body,
         _newbie_block(cfg, my_link),
+        (cfg.get("footer_note") or "").strip().format(link=my_link),
         (cfg.get("signature") or "").strip(),
     ]
     return "\n\n".join(p for p in parts if p and p.strip()).strip()
