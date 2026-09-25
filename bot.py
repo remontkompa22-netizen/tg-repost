@@ -304,6 +304,63 @@ def process_callbacks(state: dict, cfg: dict) -> None:
         time.sleep(0.4)
 
 
+def publish_overdue(state: dict, cfg: dict) -> int:
+    """Публикует черновики, которые провисели дольше auto_after_minutes.
+
+    Смысл в том, чтобы промокод не сгорел, пока хозяин занят: кнопки остаются,
+    но если их не нажали — пост уходит сам. Пауза («⏸ Стоп») сильнее таймера.
+    """
+    wait = cfg.get("auto_after_minutes")
+    if not wait or state.get("paused"):
+        return 0
+
+    limit = float(wait) * 60
+    now = time.time()
+    done = 0
+
+    for key, entry in list((state.get("pending") or {}).items()):
+        created = entry.get("created")
+        if not created:
+            # черновик из версии без таймера — начинаем отсчёт с этого запуска,
+            # чтобы старая очередь не улетела в каналы разом
+            entry["created"] = now
+            continue
+        if now - created < limit:
+            continue
+
+        links, failed = publish_everywhere(
+            entry["text"], entry.get("photos") or [], entry.get("videos") or [], cfg)
+        if not links:
+            print(f"Таймер: {key} опубликовать не удалось, повторим позже",
+                  file=sys.stderr)
+            tg("sendMessage", chat_id=ADMIN,
+               text=f"⚠️ Черновик {key} не ушёл в канал по таймеру. "
+                    f"Проверь права бота, попробую снова при следующей проверке.")
+            continue
+        if failed:
+            tg("sendMessage", chat_id=ADMIN,
+               text="⚠️ По таймеру опубликовано не везде. Не приняли: "
+                    + ", ".join(failed))
+
+        state["pending"].pop(key, None)
+        state.setdefault("published", []).append(key)
+
+        if entry.get("message_id"):
+            tg("editMessageReplyMarkup", chat_id=ADMIN,
+               message_id=entry["message_id"],
+               reply_markup={"inline_keyboard": [[{"text": "⏱ Ушло по таймеру",
+                                                   "callback_data": "done"}]]})
+        tg("sendMessage", chat_id=ADMIN, disable_web_page_preview=True,
+           text=f"⏱ {key} опубликован по таймеру"
+                + ("\n" + "\n".join(links) if links else ""))
+        done += 1
+        time.sleep(0.5)
+
+    if done:
+        print(f"по таймеру опубликовано: {done}")
+    return done
+
+
 # ───────────────────────── новые посты ─────────────────────────
 
 def sources(cfg: dict) -> list[dict]:
@@ -522,8 +579,12 @@ def check_one_source(state: dict, cfg: dict, src_cfg: dict) -> int:
             time.sleep(0.5)
             continue
 
+        wait = cfg.get("auto_after_minutes")
+        timer_note = (f"\n⏱ не нажмёшь — опубликую сам через {int(wait)} мин"
+                      if wait else "")
         draft = (f"{text}\n\n— — —\n"
-                 f"📝 черновик #{post.id} · {name} · оригинал: {post.url}")
+                 f"📝 черновик #{post.id} · {name} · оригинал: {post.url}"
+                 f"{timer_note}")
         res = send_media(ADMIN, draft, entry["photos"], entry["videos"],
                          reply_markup=draft_keyboard(key, target_channels(cfg),
                                                      cfg.get("channel_labels")),
@@ -532,6 +593,11 @@ def check_one_source(state: dict, cfg: dict, src_cfg: dict) -> int:
             print(f"[{name}] черновик #{post.id} не отправлен, повторим позже",
                   file=sys.stderr)
             continue
+
+        entry["created"] = time.time()             # отсчёт для таймера автопубликации
+        mid = ((res or {}).get("result") or {})
+        if isinstance(mid, dict) and mid.get("message_id"):
+            entry["message_id"] = mid["message_id"]
 
         state.setdefault("pending", {})[key] = entry
         mem["last_post_id"] = max(mem["last_post_id"], post.id)
@@ -568,7 +634,8 @@ def main() -> int:
 
     try:
         process_callbacks(state, cfg)  # сперва исполняем решения по старым черновикам
-        check_new_posts(state, cfg)   # затем ищем новое
+        publish_overdue(state, cfg)    # затем то, что провисело дольше таймера
+        check_new_posts(state, cfg)    # и только потом ищем новое
     finally:
         save_state(state)
     return 0
